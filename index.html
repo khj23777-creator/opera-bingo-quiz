@@ -165,8 +165,9 @@
         import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, setDoc, onSnapshot, collection, query, where, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         
-        // --- Firebase 초기화 및 설정 ---
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        // --- Firebase 초기화 및 설정 (로컬 환경 대응) ---
+        // Canvas 외 환경에서 실행될 경우, 아래와 같이 더미 값 사용을 시도합니다.
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'local-debug-app-id';
         const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
         const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
         
@@ -175,9 +176,17 @@
         const GRID_SIZE = 3;
 
         try {
-            app = initializeApp(firebaseConfig);
-            db = getFirestore(app);
-            auth = getAuth(app);
+            // 로컬 디버깅 환경(firebaseConfig가 비어있는 경우)인지 확인
+            if (Object.keys(firebaseConfig).length === 0) {
+                console.error("--- LOCAL ENVIRONMENT WARNING (Student App) ---");
+                console.error("Firebase config is empty. Bingo progress will NOT be saved/shared.");
+                document.getElementById('status-message').querySelector('p').textContent = '⚠️ 로컬 환경 실행 중. Firebase 연결이 필요합니다.';
+                // Firebase 초기화를 건너뛰고 기능 비활성화 (db, auth는 undefined 상태 유지)
+            } else {
+                app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+            }
         } catch (error) {
             console.error("Firebase Initialization Error:", error);
             document.getElementById('status-message').querySelector('p').textContent = '❌ Firebase 연결 오류. 콘솔을 확인하세요.';
@@ -213,6 +222,12 @@
          * Firebase 인증 및 데이터 리스너 설정
          */
         async function setupFirebaseAndListen() {
+            // Firebase가 초기화되지 않았으면, 보드만 생성하고 종료
+            if (!db) {
+                initializeNewBoard();
+                return;
+            }
+
             onAuthStateChanged(auth, async (user) => {
                 if (user) {
                     userId = user.uid;
@@ -265,6 +280,11 @@
          * Firestore에 저장된 사용자 보드를 로드하거나 새로 생성합니다.
          */
         async function loadOrCreateBoard() {
+            // Firebase가 초기화되지 않았다면 새 보드 생성 후 종료
+            if (!db) {
+                initializeNewBoard();
+                return;
+            }
             if (!userId) return;
 
             // 컬렉션 경로 변경: 'current_board_opera'
@@ -292,13 +312,14 @@
                 board.push({ ...item, isFilled: item.topic.includes('보너스') ? true : false, submissionStatus: null, id: crypto.randomUUID() });
             }
             saveBoardToFirestore();
-            statusMessage.textContent = '새로운 빙고판이 생성되었습니다.';
+            statusMessage.textContent = db ? '새로운 빙고판이 생성되었습니다.' : '⚠️ 로컬 보드가 생성되었습니다. (저장 불가)';
         }
         
         /**
          * 현재 보드 상태를 Firestore에 저장합니다.
          */
         async function saveBoardToFirestore() {
+            if (!db) return; // Firebase 연결이 없으면 저장하지 않음
             if (!userId) return;
             try {
                 // 컬렉션 경로 변경: 'current_board_opera'
@@ -318,6 +339,7 @@
          * 실시간 인증 상태 리스너 설정 (관리자 승인 확인용)
          */
         function listenForSubmissions() {
+            if (!db) return; // Firebase 연결이 없으면 리스너 작동 안함
             if (!userId) return;
             // 컬렉션 경로 변경: 'submissions_opera'
             const submissionsRef = collection(db, `artifacts/${appId}/public/submissions_opera`);
@@ -447,7 +469,14 @@
                 inputElement.classList.add('hidden');
                 submitButton.classList.add('hidden');
                 submitActionButton.classList.remove('hidden');
-                submitActionButton.disabled = false;
+                // Firebase 연결이 없으면 인증 요청 버튼 비활성화
+                submitActionButton.disabled = !db;
+                if (!db) {
+                     submitActionButton.title = 'Firebase 연결이 필요합니다.';
+                } else {
+                     submitActionButton.title = '';
+                }
+
             } else {
                 // 일반 미션: '정답 입력' UI 활성화
                 inputElement.classList.remove('hidden');
@@ -517,6 +546,11 @@
          * 액션 미션 인증 요청을 Firestore에 기록
          */
         async function submitPhotoRequest() {
+            if (!db) {
+                alert('❌ Firebase 연결이 필요합니다. 로컬 환경에서는 인증 요청을 보낼 수 없습니다.');
+                return;
+            }
+
             if (selectedIndex === -1 || board[selectedIndex].isFilled || submissionStates[selectedIndex] === 'pending') return;
             if (!userId) {
                 statusMessage.textContent = '사용자 인증 중입니다. 잠시 기다려주세요.';
@@ -587,7 +621,7 @@
             if (bingoCount > 0) {
                 showWinMessage(bingoCount);
             } else {
-                statusMessage.textContent = `현재 ${board.filter(item => item.isFilled).length}칸 채움. 빙고를 위해 집중하세요! 사용자 ID: ${userId}`;
+                statusMessage.textContent = `현재 ${board.filter(item => item.isFilled).length}칸 채움. 빙고를 위해 집중하세요! 사용자 ID: ${db ? userId : '로컬'}`;
                 resetControls();
             }
         }

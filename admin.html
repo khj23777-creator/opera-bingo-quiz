@@ -76,8 +76,9 @@
         import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, onSnapshot, collection, updateDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         
-        // --- Firebase 초기화 및 설정 ---
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        // --- Firebase 초기화 및 설정 (로컬 환경 대응) ---
+        // Canvas 외 환경에서 실행될 경우, 아래와 같이 더미 값 사용을 시도합니다.
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'local-debug-app-id';
         const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
         const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
         
@@ -88,22 +89,31 @@
         const SUBMISSIONS_COLLECTION_PATH = `artifacts/${appId}/public/submissions_opera`;
 
         try {
-            const app = initializeApp(firebaseConfig);
-            db = getFirestore(app);
-            auth = getAuth(app);
-            
-            // 익명 사용자 인증 (Firestore 사용을 위함)
-            window.addEventListener('DOMContentLoaded', () => {
-                onAuthStateChanged(auth, async (user) => {
-                    if (!user) {
-                        if (initialAuthToken) {
-                            await signInWithCustomToken(auth, initialAuthToken);
-                        } else {
-                            await signInAnonymously(auth);
+            // 로컬 디버깅 환경(firebaseConfig가 비어있는 경우)인지 확인
+            if (Object.keys(firebaseConfig).length === 0) {
+                console.error("--- LOCAL ENVIRONMENT WARNING ---");
+                console.error("Firebase config is empty. This code is designed to run in a controlled environment.");
+                console.error("The dashboard will function visually, but real-time data connection will fail.");
+                document.getElementById('login-message').textContent = '⚠️ 로컬 환경 실행 중: Firebase 기능 비활성화됨. 실제 배포 환경에서 실행하세요.';
+                // 여기서 Firebase 초기화를 건너뛰어 ReferenceError 방지
+            } else {
+                const app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+                
+                // 익명 사용자 인증 (Firestore 사용을 위함)
+                window.addEventListener('DOMContentLoaded', () => {
+                    onAuthStateChanged(auth, async (user) => {
+                        if (!user) {
+                            if (initialAuthToken) {
+                                await signInWithCustomToken(auth, initialAuthToken);
+                            } else {
+                                await signInAnonymously(auth);
+                            }
                         }
-                    }
+                    });
                 });
-            });
+            }
 
         } catch (error) {
             console.error("Firebase Initialization Error:", error);
@@ -129,18 +139,35 @@
                 loginSection.classList.add('hidden');
                 dashboardSection.classList.remove('hidden');
                 loginMessage.textContent = '';
-                listenForSubmissions(); // 로그인 성공 시 리스너 시작
+                
+                // 로컬 환경일 경우 더미 데이터 렌더링
+                if (!db) { 
+                    renderDummySubmissions();
+                } else {
+                    listenForSubmissions(); // Firebase 활성화 시 리스너 시작
+                }
             } else {
                 loginMessage.textContent = '비밀번호가 일치하지 않습니다.';
             }
         });
 
+        /**
+         * 로컬 환경 디버깅용 더미 데이터 렌더링
+         */
+        function renderDummySubmissions() {
+             const dummySubmissions = [
+                { id: 'dummy_1', userName: '김철수', topic: '📸 유명 오페라 인증', question: '오페라 작품 중 하나를 설명하여 인증 요청', status: 'pending', requestTime: { seconds: Date.now() / 1000 - 600 } },
+                { id: 'dummy_2', userName: '팀 비발디', topic: '📸 유명 오페라 인증', question: '오페라 작품 중 하나를 설명하여 인증 요청', status: 'approved', requestTime: { seconds: Date.now() / 1000 - 1200 } }
+            ];
+            submissionsList.innerHTML = `<p class="text-center text-red-600 font-bold py-4">Firebase가 연결되지 않아 더미 데이터를 표시합니다.</p>`;
+            renderSubmissions(dummySubmissions);
+        }
 
         /**
          * 실시간 인증 요청 리스너 설정
          */
         function listenForSubmissions() {
-            if (!isAdminLoggedIn) return;
+            if (!isAdminLoggedIn || !db) return; // db가 없으면 Firebase 기능 실행 안함
 
             const submissionsRef = collection(db, SUBMISSIONS_COLLECTION_PATH);
             
@@ -172,7 +199,7 @@
                 if (a.status === 'pending' && b.status !== 'pending') return -1;
                 if (a.status !== 'pending' && b.status === 'pending') return 1;
                 // 요청 시간(requestTime)이 최신순으로 정렬
-                return b.requestTime?.toDate().getTime() - a.requestTime?.toDate().getTime();
+                return b.requestTime?.seconds - a.requestTime?.seconds; // Firestore Timestamp 처리
             });
 
 
@@ -188,8 +215,16 @@
                 const statusText = isPending ? '⏳ 대기 중' : 
                                    submission.status === 'approved' ? '✅ 승인됨' : '❌ 거절됨';
                 
-                const timeString = submission.requestTime ? 
-                    new Date(submission.requestTime.seconds * 1000).toLocaleString('ko-KR', { timeStyle: 'short', dateStyle: 'short' }) : 'N/A';
+                const requestTime = submission.requestTime;
+                let timeString = 'N/A';
+
+                if (requestTime && typeof requestTime.toDate === 'function') {
+                    // Firestore Timestamp 객체인 경우
+                    timeString = requestTime.toDate().toLocaleString('ko-KR', { timeStyle: 'short', dateStyle: 'short' });
+                } else if (typeof requestTime === 'object' && requestTime.seconds) {
+                    // 더미 데이터의 경우
+                    timeString = new Date(requestTime.seconds * 1000).toLocaleString('ko-KR', { timeStyle: 'short', dateStyle: 'short' });
+                }
 
                 const submissionItem = document.createElement('div');
                 submissionItem.className = `card p-5 rounded-xl flex flex-col md:flex-row justify-between items-start md:items-center ${statusClass} border-l-4`;
@@ -199,14 +234,14 @@
                            <h3 class="text-2xl font-bold text-gray-900">${userNameDisplay}</h3>
                            <p class="text-xs font-semibold text-gray-500">(${timeString})</p>
                         </div>
-                        <p class="text-sm text-gray-600 mt-1">미션: ${submission.topic} / ID: <span class="font-mono text-gray-400 text-xs">${submission.userId}</span></p>
+                        <p class="text-sm text-gray-600 mt-1">미션: ${submission.topic} / ID: <span class="font-mono text-gray-400 text-xs">${submission.userId || 'N/A'}</span></p>
                         <p class="text-sm italic text-gray-700 mt-2">${submission.question}</p>
                     </div>
                     <div class="flex items-center space-x-2">
                         <span class="px-3 py-1 text-sm font-semibold rounded-full ${isPending ? 'bg-orange-500 text-white' : 'bg-gray-300 text-gray-700'}">${statusText}</span>
                         ${isPending ? `
-                            <button data-id="${submission.id}" data-action="approve" class="btn-approve px-4 py-2 text-white font-bold rounded-lg text-sm">승인</button>
-                            <button data-id="${submission.id}" data-action="reject" class="btn-reject px-4 py-2 text-white font-bold rounded-lg text-sm">거절</button>
+                            <button data-id="${submission.id}" data-action="approve" class="btn-approve px-4 py-2 text-white font-bold rounded-lg text-sm" ${!db ? 'disabled title="Firebase 연결 필요"' : ''}>승인</button>
+                            <button data-id="${submission.id}" data-action="reject" class="btn-reject px-4 py-2 text-white font-bold rounded-lg text-sm" ${!db ? 'disabled title="Firebase 연결 필요"' : ''}>거절</button>
                         ` : ''}
                     </div>
                 `;
@@ -231,7 +266,10 @@
          * 승인/거절 처리
          */
         async function handleApproval(docId, action) {
-            if (!isAdminLoggedIn) return;
+            if (!isAdminLoggedIn || !db) {
+                 alert('❌ Firebase 연결이 필요합니다. 로컬 환경에서는 승인 기능을 사용할 수 없습니다.');
+                 return;
+            }
 
             const newStatus = action === 'approve' ? 'approved' : 'rejected';
             try {
